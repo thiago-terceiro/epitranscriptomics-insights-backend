@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: epimod-worker
+spec:
+  replicas: {{ .Values.replicaCount.worker }}
+  selector:
+    matchLabels: { app: epimod-worker }
+  template:
+    metadata:
+      labels: { app: epimod-worker }
+      annotations: {{- toYaml .Values.podAnnotations | nindent 8 }}
+    spec:
+      {{- if .Values.serviceAccount.create }}
+      serviceAccountName: {{ default (include "epimod.fullname" .) .Values.serviceAccount.name | quote }}
+      {{- end }}
+      {{- if .Values.podSecurityContext.enabled }}
+      securityContext:
+        runAsNonRoot: {{ .Values.podSecurityContext.runAsNonRoot }}
+        runAsUser: {{ .Values.podSecurityContext.runAsUser }}
+        runAsGroup: {{ .Values.podSecurityContext.runAsGroup }}
+        fsGroup: {{ .Values.podSecurityContext.fsGroup }}
+      {{- end }}
+      containers:
+        - name: worker
+          image: {{ .Values.image.worker }}
+          imagePullPolicy: {{ .Values.image.pullPolicy | default "IfNotPresent" }}
+          envFrom:
+            - secretRef: { name: epimod-secrets }
+            - configMapRef: { name: epimod-config }
+          {{- if and .Values.workerProbes.liveness.enabled }}
+          livenessProbe:
+            exec:
+              command: {{ toYaml .Values.workerProbes.liveness.command | nindent 14 }}
+            initialDelaySeconds: {{ .Values.workerProbes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.workerProbes.liveness.periodSeconds }}
+          {{- end }}
+          {{- if and .Values.workerProbes.readiness.enabled }}
+          readinessProbe:
+            exec:
+              command: {{ toYaml .Values.workerProbes.readiness.command | nindent 14 }}
+            initialDelaySeconds: {{ .Values.workerProbes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.workerProbes.readiness.periodSeconds }}
+          {{- end }}
+          {{- if .Values.securityContext.enabled }}
+          securityContext:
+            allowPrivilegeEscalation: {{ .Values.securityContext.allowPrivilegeEscalation }}
+            readOnlyRootFilesystem: {{ .Values.securityContext.readOnlyRootFilesystem }}
+            capabilities:
+              drop: {{ toYaml .Values.securityContext.capabilities.drop | nindent 14 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources.worker | nindent 12 }}

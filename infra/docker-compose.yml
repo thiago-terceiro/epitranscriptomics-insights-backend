@@ -1,0 +1,334 @@
+version: "3.9"
+# NOTE: For production consider using image digests (e.g. image@sha256:...) instead of tags for immutability.
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: Dockerfile.api
+    env_file: ../.env
+    ports:
+      - "${API_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: "2"
+          memory: "2G"
+        reservations:
+          cpus: "0.5"
+          memory: "512M"
+    environment:
+      - ENVIRONMENT=production
+      - LOG_LEVEL=INFO
+      - DB_ECHO=false
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 15s
+    networks:
+      - epimod-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  worker:
+    build:
+      context: ..
+      dockerfile: Dockerfile.worker
+    env_file: ../.env
+    restart: unless-stopped
+    deploy:
+      replicas: 3  # Scale to 3 worker nodes
+      resources:
+        limits:
+          cpus: "4"
+          memory: "8G"
+        reservations:
+          cpus: "1"
+          memory: "2G"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      - QUEUE=default
+      - LOG_LEVEL=INFO
+      - CELERY_WORKER_CONCURRENCY=4
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A tasks.celery_app inspect ping"]
+      interval: 60s
+      timeout: 30s
+      retries: 3
+      start_period: 30s
+    networks:
+      - epimod-network
+    volumes:
+      - worker_temp:/tmp
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  worker_high_priority:
+    build:
+      context: ..
+      dockerfile: Dockerfile.worker
+    env_file: ../.env
+    restart: unless-stopped
+    deploy:
+      replicas: 2  # Scale to 2 high-priority worker nodes
+      resources:
+        limits:
+          cpus: "4"
+          memory: "8G"
+        reservations:
+          cpus: "1"
+          memory: "2G"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      - QUEUE=high_priority
+      - LOG_LEVEL=INFO
+      - CELERY_WORKER_CONCURRENCY=2
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A tasks.celery_app inspect ping"]
+      interval: 60s
+      timeout: 30s
+      retries: 3
+      start_period: 30s
+    networks:
+      - epimod-network
+    volumes:
+      - worker_temp:/tmp
+
+  worker_low_priority:
+    build:
+      context: ..
+      dockerfile: Dockerfile.worker
+    env_file: ../.env
+    restart: unless-stopped
+    deploy:
+      replicas: 1  # Scale to 1 low-priority worker node
+      resources:
+        limits:
+          cpus: "2"
+          memory: "4G"
+        reservations:
+          cpus: "0.5"
+          memory: "1G"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      - QUEUE=low_priority
+      - LOG_LEVEL=INFO
+      - CELERY_WORKER_CONCURRENCY=1
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A tasks.celery_app inspect ping"]
+      interval: 60s
+      timeout: 30s
+      retries: 3
+      start_period: 30s
+    networks:
+      - epimod-network
+    volumes:
+      - worker_temp:/tmp
+
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    ports: 
+      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+      - "${RABBITMQ_PORT:-5672}:5672"
+    environment:
+      - RABBITMQ_DEFAULT_USER=${RABBITMQ_USER:-guest}
+      - RABBITMQ_DEFAULT_PASS=${RABBITMQ_PASS:-guest}
+      - RABBITMQ_VM_MEMORY_HIGH_WATERMARK=0.8
+    restart: unless-stopped
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - epimod-network
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: "2G"
+        reservations:
+          cpus: "0.5"
+          memory: "512M"
+
+  postgres:
+    image: postgres:16
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-epi}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-epi_pass}
+      - POSTGRES_DB=${POSTGRES_DB:-epimod}
+      - POSTGRES_INITDB_ARGS=--auth-host=scram-sha-256
+    ports: 
+      - "${POSTGRES_PORT:-5432}:5432"
+    restart: unless-stopped
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-epi} -d ${POSTGRES_DB:-epimod}"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - epimod-network
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: "4G"
+        reservations:
+          cpus: "1"
+          memory: "1G"
+    command: >
+      postgres 
+      -c max_connections=200
+      -c shared_buffers=256MB
+      -c effective_cache_size=1GB
+      -c work_mem=4MB
+      -c maintenance_work_mem=64MB
+      -c checkpoint_completion_target=0.7
+      -c wal_buffers=16MB
+      -c default_statistics_target=100
+
+  minio:
+    image: minio/minio:RELEASE.2024-06-13T22-53-53Z
+    command: server /data --console-address ":9001"
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ACCESS_KEY}
+      - MINIO_ROOT_PASSWORD=${MINIO_SECRET_KEY}
+    ports: ["9000:9000", "9001:9001"]
+    restart: unless-stopped
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  create-bucket:
+    image: minio/mc
+    depends_on: [minio]
+    entrypoint: ["/bin/sh","-c"]
+    command: >
+      "mc alias set local http://minio:9000 ${MINIO_ACCESS_KEY} ${MINIO_SECRET_KEY};
+       mc mb -p local/${MINIO_BUCKET} || true;"
+    restart: "no"
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.14.1
+    command: mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:///mlflow.db --default-artifact-root s3://mlflow
+    environment:
+      - MLFLOW_S3_ENDPOINT_URL=http://minio:9000
+      - AWS_ACCESS_KEY_ID=${MINIO_ACCESS_KEY}
+      - AWS_SECRET_ACCESS_KEY=${MINIO_SECRET_KEY}
+    ports: ["5000:5000"]
+    restart: unless-stopped
+    volumes:
+      - mlflow_data:/mlflow
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:5000/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7.2-alpine
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    command: >
+      redis-server 
+      --maxmemory 1gb
+      --maxmemory-policy allkeys-lru
+      --appendonly yes
+      --appendfsync everysec
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - epimod-network
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: "1G"
+        reservations:
+          cpus: "0.25"
+          memory: "256M"
+
+# Named volumes for stateful services.
+volumes:
+  postgres_data:
+    driver: local
+  minio_data:
+    driver: local
+  mlflow_data:
+    driver: local
+  rabbitmq_data:
+    driver: local
+  redis_data:
+    driver: local
+  worker_temp:
+    driver: local
+
+# Network for service communication
+networks:
+  epimod-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

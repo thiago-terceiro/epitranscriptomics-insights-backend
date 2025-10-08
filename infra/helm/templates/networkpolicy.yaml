@@ -1,0 +1,135 @@
+{{- if .Values.networkPolicy.enabled }}
+{{/* API ingress: allow from same namespace pods (default) + optional extra namespaces */}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: epimod-api
+spec:
+  podSelector:
+    matchLabels:
+      app: epimod-api
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector: {}
+        {{- range .Values.networkPolicy.allowNamespaces }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . | quote }}
+        {{- end }}
+      ports:
+        {{- range .Values.networkPolicy.api.ingressPorts }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+  egress:
+    - to:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 5432 # Postgres
+        - protocol: TCP
+          port: 5672 # RabbitMQ
+        - protocol: TCP
+          port: 9000 # MinIO
+        - protocol: TCP
+          port: 9001 # MinIO console (if used by API)
+---
+{{- if .Values.networkPolicy.worker.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: epimod-worker
+spec:
+  podSelector:
+    matchLabels:
+      app: epimod-worker
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector: {}
+  egress:
+    - to:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 5432
+        - protocol: TCP
+          port: 5672
+        - protocol: TCP
+          port: 9000
+        - protocol: TCP
+          port: 9001
+{{- end }}
+---
+{{- if .Values.networkPolicy.postgres.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: epimod-postgresql
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: postgresql
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: epimod-api
+        - podSelector:
+            matchLabels:
+              app: epimod-worker
+      ports:
+        - protocol: TCP
+          port: 5432
+{{- end }}
+---
+{{- if .Values.networkPolicy.rabbitmq.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: epimod-rabbitmq
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: rabbitmq
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: epimod-api
+        - podSelector:
+            matchLabels:
+              app: epimod-worker
+      ports:
+        - protocol: TCP
+          port: 5672
+{{- end }}
+---
+{{- if .Values.networkPolicy.minio.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: epimod-minio
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: minio
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: epimod-api
+        - podSelector:
+            matchLabels:
+              app: epimod-worker
+      ports:
+        - protocol: TCP
+          port: 9000
+        - protocol: TCP
+          port: 9001
+{{- end }}
+{{- end }}

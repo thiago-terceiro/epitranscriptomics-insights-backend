@@ -1,0 +1,21 @@
+FROM mambaorg/micromamba:1.5.8
+USER root
+WORKDIR /app
+# Create env with bio tools + python deps
+COPY conda/env.yaml /tmp/env.yaml
+RUN micromamba create -y -n epimod -f /tmp/env.yaml && \
+    micromamba clean --all --yes
+SHELL ["/bin/bash", "-lc"]
+ENV MAMBA_DEFAULT_ENV=epimod
+ENV PATH=/opt/conda/envs/epimod/bin:$PATH
+
+# Python deps
+COPY services/worker/requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
+
+# Code
+COPY services/worker /app
+COPY models /models
+
+ENTRYPOINT ["bash", "-lc"]
+CMD ["celery", "-A", "tasks.celery_app", "worker", "--loglevel=INFO", "-Q", "default"]

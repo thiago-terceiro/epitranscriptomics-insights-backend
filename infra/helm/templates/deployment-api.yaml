@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: epimod-api
+spec:
+  replicas: {{ .Values.replicaCount.api }}
+  selector:
+    matchLabels: { app: epimod-api }
+  template:
+    metadata:
+      labels: { app: epimod-api }
+      annotations: {{- toYaml .Values.podAnnotations | nindent 8 }}
+    spec:
+      {{- if .Values.serviceAccount.create }}
+      serviceAccountName: {{ default (include "epimod.fullname" .) .Values.serviceAccount.name | quote }}
+      {{- end }}
+      {{- if .Values.podSecurityContext.enabled }}
+      securityContext:
+        runAsNonRoot: {{ .Values.podSecurityContext.runAsNonRoot }}
+        runAsUser: {{ .Values.podSecurityContext.runAsUser }}
+        runAsGroup: {{ .Values.podSecurityContext.runAsGroup }}
+        fsGroup: {{ .Values.podSecurityContext.fsGroup }}
+      {{- end }}
+      containers:
+        - name: api
+          image: {{ .Values.image.api }}
+          imagePullPolicy: {{ .Values.image.pullPolicy | default "IfNotPresent" }}
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - secretRef: { name: epimod-secrets }
+            - configMapRef: { name: epimod-config }
+          {{- if .Values.livenessProbe.api.enabled }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.livenessProbe.api.path }}
+              port: 8080
+            initialDelaySeconds: {{ .Values.livenessProbe.api.initialDelaySeconds }}
+            periodSeconds: {{ .Values.livenessProbe.api.periodSeconds }}
+          {{- end }}
+          {{- if .Values.readinessProbe.api.enabled }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.readinessProbe.api.path }}
+              port: 8080
+            initialDelaySeconds: {{ .Values.readinessProbe.api.initialDelaySeconds }}
+            periodSeconds: {{ .Values.readinessProbe.api.periodSeconds }}
+          {{- end }}
+          {{- if .Values.securityContext.enabled }}
+          securityContext:
+            allowPrivilegeEscalation: {{ .Values.securityContext.allowPrivilegeEscalation }}
+            readOnlyRootFilesystem: {{ .Values.securityContext.readOnlyRootFilesystem }}
+            capabilities:
+              drop: {{ toYaml .Values.securityContext.capabilities.drop | nindent 14 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources.api | nindent 12 }}
