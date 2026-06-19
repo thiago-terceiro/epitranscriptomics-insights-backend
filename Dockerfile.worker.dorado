@@ -1,0 +1,50 @@
+FROM nvidia/cuda:12.6.2-runtime-ubuntu22.04
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONPATH=/app \
+    DEBIAN_FRONTEND=noninteractive
+
+# System deps: Python 3, build tools, curl for healthcheck
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    python3-pip \
+    python3-dev \
+    curl \
+    wget \
+    ca-certificates \
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Dorado basecaller from Oxford Nanopore CDN
+ARG DORADO_VERSION=0.9.1
+RUN wget -q \
+    "https://cdn.oxfordnanoportal.com/software/analysis/dorado-${DORADO_VERSION}-linux-x64.tar.gz" \
+    -O /tmp/dorado.tar.gz \
+    && tar -xzf /tmp/dorado.tar.gz -C /opt \
+    && mv /opt/dorado-${DORADO_VERSION}-linux-x64 /opt/dorado \
+    && rm /tmp/dorado.tar.gz
+
+ENV PATH="/opt/dorado/bin:$PATH"
+ENV DORADO_BIN="/opt/dorado/bin/dorado"
+
+WORKDIR /app
+
+# Install Python dependencies (same requirements as standard worker)
+COPY requirements.txt /app/requirements.txt
+RUN python3 -m pip install --no-cache-dir -r /app/requirements.txt
+
+# Copy worker service code
+COPY services/worker /app/worker
+
+WORKDIR /app/worker
+
+# Directories Dorado and the runner use
+RUN mkdir -p /models /tmp/dorado_work
+
+# One concurrent Dorado job — GPU is the bottleneck
+CMD ["celery", "-A", "tasks.celery_app", "worker", \
+     "--loglevel=INFO", \
+     "-Q", "dorado", \
+     "--concurrency=1"]

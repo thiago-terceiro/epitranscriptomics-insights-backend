@@ -1,0 +1,252 @@
+version: "3.9"
+
+# Lightweight local development setup
+# Minimal resources, single worker, perfect for MVP testing
+# Run with: docker compose -f infra/docker-compose.local.yml up
+
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: Dockerfile.api
+    env_file: ../.env
+    ports:
+      - "${API_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+    environment:
+      - ENVIRONMENT=development
+      - LOG_LEVEL=DEBUG
+      - DB_ECHO=true
+      - ALPHAFOLD3_MOCK_MODE=${ALPHAFOLD3_MOCK_MODE:-true}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - epimod-local
+
+  # Single lightweight worker for local testing
+  worker:
+    build:
+      context: ..
+      dockerfile: Dockerfile.worker
+    env_file: ../.env
+    restart: unless-stopped
+    command: celery -A tasks.celery_app worker --loglevel=INFO -Q celery,default,high_priority,low_priority
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      create-bucket:
+        condition: service_completed_successfully
+    environment:
+      - LOG_LEVEL=DEBUG
+      - CELERY_WORKER_CONCURRENCY=2  # Limit to 2 concurrent tasks
+      - PIPELINE_MOCK_MODE=${PIPELINE_MOCK_MODE:-true}
+      - MLFLOW_S3_ENDPOINT_URL=http://minio:9000
+      - AWS_ACCESS_KEY_ID=${MINIO_ACCESS_KEY:-minioadmin}
+      - AWS_SECRET_ACCESS_KEY=${MINIO_SECRET_KEY:-minioadmin}
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A tasks.celery_app inspect ping"]
+      interval: 60s
+      timeout: 30s
+      retries: 3
+      start_period: 30s
+    networks:
+      - epimod-local
+    volumes:
+      - worker_temp:/tmp
+
+  # Dorado basecalling worker — runs in MOCK mode locally (no GPU required).
+  # To test with a real GPU, set PIPELINE_MOCK_MODE=false and ensure
+  # NVIDIA Container Toolkit is installed on the host.
+  worker_dorado:
+    build:
+      context: ..
+      dockerfile: Dockerfile.worker
+    env_file: ../.env
+    restart: unless-stopped
+    command: celery -A tasks.celery_app worker --loglevel=DEBUG -Q dorado --concurrency=1
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      create-bucket:
+        condition: service_completed_successfully
+    environment:
+      - LOG_LEVEL=DEBUG
+      - CELERY_WORKER_CONCURRENCY=1
+      - PIPELINE_MOCK_MODE=${PIPELINE_MOCK_MODE:-true}
+      - DORADO_DEVICE=cpu
+      - MLFLOW_S3_ENDPOINT_URL=http://minio:9000
+      - AWS_ACCESS_KEY_ID=${MINIO_ACCESS_KEY:-minioadmin}
+      - AWS_SECRET_ACCESS_KEY=${MINIO_SECRET_KEY:-minioadmin}
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A tasks.celery_app inspect ping -d celery@$$HOSTNAME"]
+      interval: 60s
+      timeout: 30s
+      retries: 3
+      start_period: 30s
+    networks:
+      - epimod-local
+    volumes:
+      - worker_temp:/tmp
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine  # Alpine = smaller image
+    ports: 
+      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+      - "${RABBITMQ_PORT:-5672}:5672"
+    environment:
+      - RABBITMQ_DEFAULT_USER=${RABBITMQ_USER:-guest}
+      - RABBITMQ_DEFAULT_PASS=${RABBITMQ_PASS:-guest}
+    restart: unless-stopped
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - epimod-local
+
+  postgres:
+    image: postgres:16-alpine  # Alpine = smaller image
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-epi}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-epi_pass}
+      - POSTGRES_DB=${POSTGRES_DB:-epimod}
+    ports: 
+      - "${POSTGRES_PORT:-5432}:5432"
+    restart: unless-stopped
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-epi} -d ${POSTGRES_DB:-epimod}"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+    networks:
+      - epimod-local
+    command: >
+      postgres 
+      -c max_connections=50
+      -c shared_buffers=128MB
+      -c work_mem=4MB
+
+  minio:
+    image: minio/minio:RELEASE.2024-06-13T22-53-53Z
+    command: server /data --console-address ":9001"
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${MINIO_SECRET_KEY:-minioadmin}
+    ports: 
+      - "9000:9000"
+      - "9001:9001"
+    restart: unless-stopped
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - epimod-local
+
+  create-bucket:
+    image: minio/mc
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        mc alias set local http://minio:9000 $${MINIO_ACCESS_KEY:-minioadmin} $${MINIO_SECRET_KEY:-minioadmin}
+        mc mb -p local/$${MINIO_BUCKET:-epimod-results} || true
+        mc mb -p local/mlflow || true
+    restart: "no"
+    networks:
+      - epimod-local
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v3.12.0
+    command: mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:///mlflow.db --default-artifact-root s3://mlflow
+    environment:
+      - MLFLOW_S3_ENDPOINT_URL=http://minio:9000
+      - AWS_ACCESS_KEY_ID=${MINIO_ACCESS_KEY:-minioadmin}
+      - AWS_SECRET_ACCESS_KEY=${MINIO_SECRET_KEY:-minioadmin}
+    ports: 
+      - "5000:5000"
+    restart: unless-stopped
+    volumes:
+      - mlflow_data:/mlflow
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:5000/\")' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - epimod-local
+    depends_on:
+      minio:
+        condition: service_healthy
+      create-bucket:
+        condition: service_completed_successfully
+
+  redis:
+    image: redis:7.2-alpine
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    command: >
+      redis-server 
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --save ""
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - epimod-local
+
+volumes:
+  postgres_data:
+  minio_data:
+  mlflow_data:
+  rabbitmq_data:
+  redis_data:
+  worker_temp:
+
+networks:
+  epimod-local:
+    driver: bridge

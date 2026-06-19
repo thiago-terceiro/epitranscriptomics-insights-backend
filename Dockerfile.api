@@ -5,7 +5,8 @@ FROM python:3.11-slim as base
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONPATH=/app
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -22,11 +23,14 @@ WORKDIR /app
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
-COPY services/api /app
+# Copy application code (preserve package structure)
+COPY services/worker /app/worker
+
+# Switch into API package
+WORKDIR /app/worker/api
 
 # Create necessary directories and set permissions
-RUN mkdir -p /app/logs && \
+RUN mkdir -p /app/worker/api/logs && \
     chown -R appuser:appuser /app
 
 # Switch to non-root user

@@ -1,21 +1,39 @@
-FROM mambaorg/micromamba:1.5.8
-USER root
+FROM python:3.11-slim
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONPATH=/app
+
+# Install system dependencies for bioinformatics tools
+RUN apt-get update && apt-get install -y \
+    --no-install-recommends \
+    curl \
+    wget \
+    build-essential \
+    ca-certificates \
+    minimap2 \
+    samtools \
+    pigz \
+    sra-toolkit \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
-# Create env with bio tools + python deps
-COPY conda/env.yaml /tmp/env.yaml
-RUN micromamba create -y -n epimod -f /tmp/env.yaml && \
-    micromamba clean --all --yes
-SHELL ["/bin/bash", "-lc"]
-ENV MAMBA_DEFAULT_ENV=epimod
-ENV PATH=/opt/conda/envs/epimod/bin:$PATH
 
 # Python deps
-COPY services/worker/requirements.txt /app/requirements.txt
+COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
+RUN pip install --no-cache-dir m6anet
 
-# Code
-COPY services/worker /app
-COPY models /models
+# Code (preserve package structure)
+COPY services/worker /app/worker
 
-ENTRYPOINT ["bash", "-lc"]
+# Switch into worker package root
+WORKDIR /app/worker
+
+# Create models directory (empty for now)
+RUN mkdir -p /models /opt/cheui/scripts /opt/cheui/kmer_models /opt/cheui/CHEUI_trained_models
+
 CMD ["celery", "-A", "tasks.celery_app", "worker", "--loglevel=INFO", "-Q", "default"]

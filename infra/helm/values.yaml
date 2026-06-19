@@ -1,6 +1,6 @@
 image:
-  api: ghcr.io/yourorg/epimod-api:0.1.0  # TODO: pin by digest for production
-  worker: ghcr.io/yourorg/epimod-worker:0.1.0  # TODO: pin by digest
+  api: docker.io/PLACEHOLDER_ORG_NAME/epimod:api-0.1.0
+  worker: docker.io/PLACEHOLDER_ORG_NAME/epimod:worker-0.1.0
   pullPolicy: IfNotPresent
 
 podSecurityContext:
@@ -77,15 +77,20 @@ serviceAccount:
   annotations: {}
 
 ingress:
-  enabled: false
-  className: ""
-  annotations: {}
+  enabled: false  # Set to true when deploying to K8s with ingress controller
+  className: "nginx"  # or "traefik", depending on your cluster
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/proxy-body-size: "500m"  # For large file uploads
   hosts:
-    - host: api.local
+    - host: api.PLACEHOLDER_DOMAIN.com
       paths:
         - path: /
           pathType: Prefix
-  tls: []
+  tls:
+    - secretName: epimod-api-tls
+      hosts:
+        - api.PLACEHOLDER_DOMAIN.com
 
 postgresql:
   auth:

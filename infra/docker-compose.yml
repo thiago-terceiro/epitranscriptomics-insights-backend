@@ -21,7 +21,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     deploy:
-      replicas: 2
+      replicas: 1
       resources:
         limits:
           cpus: "2"
@@ -169,6 +169,56 @@ services:
     volumes:
       - worker_temp:/tmp
 
+  # GPU worker for Dorado basecalling (POD5 → BAM with modification tags)
+  # Requires NVIDIA Container Toolkit on the host.
+  # Remove the `devices` reservation if no GPU is available (CPU fallback only).
+  worker_dorado:
+    build:
+      context: ..
+      dockerfile: Dockerfile.worker.dorado
+    env_file: ../.env
+    restart: unless-stopped
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: "8"
+          memory: "16G"
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      - QUEUE=dorado
+      - LOG_LEVEL=INFO
+      - CELERY_WORKER_CONCURRENCY=1
+      - DORADO_DEVICE=cuda:all
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A tasks.celery_app inspect ping -d celery@$$HOSTNAME"]
+      interval: 60s
+      timeout: 30s
+      retries: 3
+      start_period: 60s
+    networks:
+      - epimod-network
+    volumes:
+      - worker_temp:/tmp
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   rabbitmq:
     image: rabbitmq:3.13-management
     ports: 
@@ -177,7 +227,6 @@ services:
     environment:
       - RABBITMQ_DEFAULT_USER=${RABBITMQ_USER:-guest}
       - RABBITMQ_DEFAULT_PASS=${RABBITMQ_PASS:-guest}
-      - RABBITMQ_VM_MEMORY_HIGH_WATERMARK=0.8
     restart: unless-stopped
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
@@ -264,7 +313,7 @@ services:
     restart: "no"
 
   mlflow:
-    image: ghcr.io/mlflow/mlflow:v2.14.1
+    image: ghcr.io/mlflow/mlflow:v3.12.0
     command: mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:///mlflow.db --default-artifact-root s3://mlflow
     environment:
       - MLFLOW_S3_ENDPOINT_URL=http://minio:9000
@@ -275,10 +324,11 @@ services:
     volumes:
       - mlflow_data:/mlflow
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:5000/ || exit 1"]
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:5000/\")' || exit 1"]
       interval: 30s
-      timeout: 5s
+      timeout: 10s
       retries: 5
+      start_period: 40s
 
   redis:
     image: redis:7.2-alpine

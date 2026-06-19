@@ -1,7 +1,6 @@
 from sqlalchemy.orm import declarative_base
 from sqlalchemy import Column, String, Text, DateTime, func
-from sqlalchemy import create_engine
-from .db_session import DATABASE_URL
+from sqlalchemy.types import JSON
 
 Base = declarative_base()
 
@@ -15,5 +14,13 @@ class Job(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
-engine = create_engine(DATABASE_URL)
-Base.metadata.create_all(engine)
+
+class UploadSessionModel(Base):
+    __tablename__ = "upload_sessions"
+
+    session_id = Column(String, primary_key=True)
+    user_id = Column(String, nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    files = Column(JSON, nullable=False)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())

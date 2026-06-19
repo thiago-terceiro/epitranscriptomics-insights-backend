@@ -1,23 +1,26 @@
 # Core FastAPI and ASGI
-fastapi==0.115.0
+fastapi==0.136.1
+starlette==0.52.1  # mlflow 3.12.0 still constrains Starlette below 1.x
 uvicorn[standard]==0.30.6
-gunicorn==21.2.0
+gunicorn==22.0.0
 
 # Database (Async)
-SQLAlchemy==2.0.30
-asyncpg==0.29.0
-psycopg[binary]>=3.2.1
+SQLAlchemy>=2.0.36  # Updated for Python 3.13 support
+# asyncpg==0.29.0  # Commented out - requires C compiler on Windows
+psycopg[binary,pool]>=3.2.1
 alembic==1.13.1
 
 # Validation and Serialization
 pydantic>=2.7.1
 pydantic-settings==2.4.0
+email-validator==2.1.1
 
 # Authentication and Security
-python-jose[cryptography]==3.4.0
+python-jose[cryptography]==3.5.0
 passlib[bcrypt]==1.7.4
 python-multipart>=0.0.20
-cryptography==41.0.7
+cryptography==46.0.7
+pyasn1>=0.6.3
 
 # Task Queue and Caching
 celery==5.3.6
@@ -31,7 +34,8 @@ minio==7.2.7
 # Data Processing
 pandas>=2.2.2
 numpy>=2.0.0
-mlflow>=2.14.1
+mlflow==3.12.0
+pyarrow>=23.0.1
 
 # Monitoring and Logging
 prometheus-client==0.20.0
@@ -48,12 +52,14 @@ celery-types==0.22.0
 
 # HTTP Client
 httpx==0.27.0
-aiohttp==3.9.5
+aiohttp==3.13.5
 
 # Development and Testing
-pytest==8.3.2
-pytest-asyncio==0.23.8
-pytest-cov==4.1.0
-black==24.8.0
+pytest==9.0.3
+pytest-asyncio==1.4.0
+pytest-cov==7.1.0
+pytest-mock==3.15.1
+fakeredis==2.23.3
+black==26.5.1
 isort==5.13.2
 mypy==1.11.2

@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+epi-venv/
+venv/
+env/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Documentation
+*.md
+docs/
+
+# Git
+.git/
+.gitignore
+
+# Environment
+.env
+.env.*
+
+# Data and logs
+*.log
+mock_data/
+infra/
+scripts/
+test_*.json
+mock_*.json
+LOCAL_TESTING.md
+RESEARCH_OUTPUT_FORMAT.md
+IMPLEMENTATION_SUMMARY.md
+CHANGES.md

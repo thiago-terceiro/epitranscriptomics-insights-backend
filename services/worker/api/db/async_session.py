@@ -5,19 +5,31 @@ import os
 from typing import AsyncGenerator
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.pool import QueuePool
+from sqlalchemy import text
 import logging
 
 logger = logging.getLogger(__name__)
 
 # Database Configuration
-POSTGRES_USER = os.getenv("POSTGRES_USER", "epi")
-POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "epi_pass")
-POSTGRES_HOST = os.getenv("POSTGRES_HOST", "postgres")
-POSTGRES_PORT = os.getenv("POSTGRES_PORT", "5432")
-POSTGRES_DB = os.getenv("POSTGRES_DB", "epimod")
+# Check if DATABASE_URL is set (for local testing with SQLite)
+database_url = os.getenv("DATABASE_URL")
 
-# Async Database URL
-ASYNC_DATABASE_URL = f"postgresql+asyncpg://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
+# Determine async database URL based on configuration
+if database_url and database_url.startswith("sqlite"):
+    # Use aiosqlite for async SQLite
+    async_database_url = database_url.replace("sqlite:///", "sqlite+aiosqlite:///")
+else:
+    # PostgreSQL configuration
+    POSTGRES_USER = os.getenv("POSTGRES_USER", "epi")
+    POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "epi_pass")
+    POSTGRES_HOST = os.getenv("POSTGRES_HOST", "postgres")
+    POSTGRES_PORT = os.getenv("POSTGRES_PORT", "5432")
+    POSTGRES_DB = os.getenv("POSTGRES_DB", "epimod")
+
+    # Async Database URL - using psycopg (async) instead of asyncpg for Windows compatibility
+    async_database_url = f"postgresql+psycopg://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
+
+ASYNC_DATABASE_URL = async_database_url
 
 # Create async engine with connection pooling
 async_engine = create_async_engine(
@@ -54,7 +66,7 @@ async def init_async_db():
     try:
         async with async_engine.begin() as conn:
             # Test connection
-            await conn.execute("SELECT 1")
+            await conn.execute(text("SELECT 1"))
         logger.info("Async database connection established")
     except Exception as e:
         logger.error(f"Failed to initialize async database: {e}")

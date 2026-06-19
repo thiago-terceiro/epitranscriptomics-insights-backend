@@ -6,7 +6,7 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional, List, cast
 from celery import Celery
 from celery.exceptions import Retry
 from sqlalchemy import create_engine
@@ -16,10 +16,10 @@ import mlflow
 import redis
 from datetime import datetime, timedelta
 
-from .services_common.db_models import Job
-from .services_common.db_session import DATABASE_URL
-from .runners import cheui_runner, m6anet_runner, xpore_runner
-from .notifications import publish_progress
+from services_common.db_models import Job
+from services_common.db_session import DATABASE_URL
+from runners import cheui_runner, m6anet_runner, xpore_runner
+from notifications import publish_progress
 
 # Configure logging
 logging.basicConfig(
@@ -81,6 +81,25 @@ redis_client: redis.StrictRedis = redis.StrictRedis(
 
 # Set expiration time for Redis cache entries (in seconds)
 REDIS_EXPIRATION: int = int(os.getenv("REDIS_EXPIRATION", "3600"))  # Default: 1 hour
+
+
+def _env_flag(name: str, default: str = "false") -> bool:
+    """Normalize boolean-like environment variables."""
+    return os.getenv(name, default).lower() in {"1", "true", "yes", "on"}
+
+
+PIPELINE_MOCK_MODE: bool = _env_flag("PIPELINE_MOCK_MODE", "false")
+
+
+def _should_mock(analysis_section: Any, accession: str) -> bool:
+    """Compute whether the current job should run in mock mode."""
+    if PIPELINE_MOCK_MODE:
+        return True
+    if isinstance(analysis_section, dict):
+        analysis_dict = cast(Dict[str, Any], analysis_section)
+        if bool(analysis_dict.get("mock")):
+            return True
+    return accession.startswith("mock")
 
 # Configure Celery queues with enhanced routing
 celery_app.conf.task_queues = (
@@ -194,22 +213,55 @@ def run_analysis_job(self, job_id: str) -> Dict[str, Any]:
                 # 1) Download data with progress updates
                 publish_progress(job_id, "downloading", 10)
                 logger.info(f"Job {job_id}: Downloading data for accession {payload['accession']}")
-                
-                from .pipeline.ingest import sra_download
+
+                analysis_cfg = payload.get("analysis")
+                mock_run = _should_mock(analysis_cfg, payload["accession"])
+
+                from pipeline.ingest import sra_download
                 fast5_dir: Path
                 fastq: Path
-                fast5_dir, fastq = sra_download.download(payload["accession"], workdir)
+                # Extract user_id from job if available (needed for MinIO downloads)
+                user_id = str(job.user_id) if hasattr(job, 'user_id') and job.user_id else None
+                fast5_dir, fastq, mock_ref = sra_download.download(
+                    payload["accession"], 
+                    workdir, 
+                    mock=mock_run,
+                    user_id=user_id
+                )
                 
                 publish_progress(job_id, "preprocessing", 20)
                 
-                # 2) Process reference
-                ref_fa: str = payload["reference_fasta"]
+                # 2) Preprocessing: basecall → align → eventalign (REQUIRED for real data)
+                ref_fa: str = payload.get("reference_fasta", "")
+                # Use mock reference if provided (in mock mode), otherwise use payload reference
+                if mock_ref:
+                    ref_path = mock_ref
+                else:
+                    ref_path = Path(ref_fa) if ref_fa and Path(ref_fa).exists() else None
+                eventalign_txt = None
+                
+                # Run preprocessing if we have a reference (real or mock)
+                if ref_path:
+                    from pipeline.preprocess import basecall, align, eventalign as ea
+                    
+                    logger.info(f"Job {job_id}: Running preprocessing pipeline")
+                    publish_progress(job_id, "basecalling", 25)
+                    fastq, _ = basecall.basecall(fast5_dir, workdir, reference=ref_path, mock=mock_run)
+                    
+                    publish_progress(job_id, "aligning", 28)
+                    aligned_bam = align.align(fastq, ref_path, workdir, preset="splice", mock=mock_run)
+                    
+                    publish_progress(job_id, "eventalign", 30)
+                    eventalign_txt = ea.eventalign_docker(
+                        fast5_dir, fastq, aligned_bam, ref_path, workdir, rna=True, mock=mock_run
+                    )
+                
                 models: List[str] = payload["models"]
                 
                 # 3) Run analysis models
                 results: Dict[str, Any] = {}
                 model_progress_step = 60 // len(models) if models else 60
-                current_progress = 30
+                current_progress = 35
                 
                 for i, model in enumerate(models):
                     try:
@@ -217,11 +269,15 @@ def run_analysis_job(self, job_id: str) -> Dict[str, Any]:
                         publish_progress(job_id, f"running_{model}", current_progress)
                         
                         if model == "m6anet":
-                            result = m6anet_runner.run(fast5_dir, fastq, ref_fa, workdir)
+                            result = m6anet_runner.run(fast5_dir, fastq, ref_fa, workdir, mock=mock_run)
                         elif model == "xpore":
-                            result = xpore_runner.run(fast5_dir, fastq, ref_fa, workdir)
+                            result = xpore_runner.run(fast5_dir, ref_fa, workdir, mock=mock_run)
                         elif model == "cheui":
-                            result = cheui_runner.run(fast5_dir, fastq, ref_fa, workdir)
+                            result = cheui_runner.run(
+                                fast5_dir, fastq, ref_fa, workdir,
+                                eventalign_txt=eventalign_txt if not mock_run else None,
+                                mock=mock_run
+                            )
                         else:
                             raise JobExecutionError(f"Unknown model: {model}")
                         
@@ -236,20 +292,25 @@ def run_analysis_job(self, job_id: str) -> Dict[str, Any]:
                         results[model] = {"error": str(model_error)}
                         # Continue with other models
                 
-                # 4) Post-processing
+                # 4) Post-processing - merge results with provenance tracking
                 publish_progress(job_id, "postprocessing", 90)
                 
+                from pipeline.postprocess import summarize
+                summary = summarize.collect(results, workdir)
+                
                 # Log results to MLflow
-                mlflow.log_dict(results, "results.json")
+                mlflow.log_dict(results, "model_results.json")
+                mlflow.log_dict(summary, "summary_files.json")
                 
                 # Calculate execution time
                 execution_time = time.time() - start_time
                 mlflow.log_metric("execution_time_seconds", execution_time)
                 
-                # Final result
+                # Final result with research-grade structure
                 final_result = {
                     "status": "completed",
-                    "results": results,
+                    "models": results,  # Individual model outputs
+                    "summary": summary,  # Merged files with provenance
                     "execution_time": execution_time,
                     "completed_at": datetime.utcnow().isoformat()
                 }
